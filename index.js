@@ -105,141 +105,51 @@ async function run() {
     });
 
     // ==========================================
-    // GET /rooms (Catalog Search & Filtering)
-    // ==========================================
-    app.get("/rooms", async (req, res) => {
-      try {
-        const { search, amenities, minPrice, maxPrice } = req.query;
-        let query = {};
+// GET /rooms (Catalog Search, Filtering & Ownership)
+// ==========================================
+app.get("/rooms", async (req, res) => {
+  try {
+    const { search, amenities, minPrice, maxPrice, createdBy } = req.query;
+    let query = {};
 
-        // ✅ FIX: Only run search regex if 'search' actually contains text characters!
-        if (search && search.trim() !== "") {
-          query.$or = [
-            { roomName: { $regex: search, $options: 'i' } },
-            { description: { $regex: search, $options: 'i' } },
-            { instructor: { $regex: search, $options: 'i' } } // Fallback for old mock documents
-          ];
-        }
+    // 🎯 NEW: Filter strictly by the creator's email if provided
+    if (createdBy && createdBy.trim() !== "") {
+      query.createdBy = createdBy;
+    }
 
-        if (amenities && amenities.trim() !== "") {
-          const amenitiesList = amenities.split(',');
-          query.amenities = { $all: amenitiesList };
-        }
+    // Only run search regex if 'search' actually contains text characters
+    if (search && search.trim() !== "") {
+      query.$or = [
+        { roomName: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { instructor: { $regex: search, $options: 'i' } } 
+      ];
+    }
 
-        if (minPrice || maxPrice) {
-          query.hourlyRate = {};
-          if (minPrice && minPrice.trim() !== "") query.hourlyRate.$gte = Number(minPrice);
-          if (maxPrice && maxPrice.trim() !== "") query.hourlyRate.$lte = Number(maxPrice);
-          
-          // If the sub-object ended up empty due to white spaces, clean it up
-          if (Object.keys(query.hourlyRate).length === 0) {
-            delete query.hourlyRate;
-          }
-        }
+    if (amenities && amenities.trim() !== "") {
+      const amenitiesList = amenities.split(',');
+      query.amenities = { $all: amenitiesList };
+    }
 
-        console.log("🔍 Final MongoDB operational query object:", JSON.stringify(query));
-
-        const result = await roomsCollection.find(query).toArray();
-        res.send(result);
-      } catch (err) {
-        console.error("Error executing advanced room queries:", err);
-        res.status(500).send({ error: "Failed to fetch room catalog." });
+    if (minPrice || maxPrice) {
+      query.hourlyRate = {};
+      if (minPrice && minPrice.trim() !== "") query.hourlyRate.$gte = Number(minPrice);
+      if (maxPrice && maxPrice.trim() !== "") query.hourlyRate.$lte = Number(maxPrice);
+      
+      if (Object.keys(query.hourlyRate).length === 0) {
+        delete query.hourlyRate;
       }
-    });
+    }
 
-    // ==========================================
-    // GET /rooms/:roomId (Single Details View)
-    // ==========================================
-    // ✅ FIX: Removed verifyToken middle barrier! Users can see room details without logging in first.
-    app.get("/rooms/:roomId", logger, async (req, res) => {
-      try {
-        const { roomId } = req.params;
-        if (!ObjectId.isValid(roomId)) {
-          return res.status(400).json({ error: "Invalid Room ID structure." });
-        }
-        const result = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
-        if (!result) return res.status(404).json({ error: "Room not found." });
-        res.send(result);
-      } catch (err) {
-        res.status(500).send({ error: "Failed to fetch room details." });
-      }
-    });
+    console.log("🔍 Final MongoDB operational query object:", JSON.stringify(query));
 
-    // ==========================================
-    // GET /featured (Latest Available Rooms)
-    // ==========================================
-    app.get("/featured", async (req, res) => {
-      try {
-        console.log("📡 Fetching latest featured premium study spaces...");
-        // Pull the 6 most recently created room entries cleanly
-        const result = await roomsCollection.find({}).sort({ _id: -1 }).limit(6).toArray();
-        res.send(result);
-      } catch (err) {
-        console.error("Error fetching featured rooms data:", err);
-        res.status(500).send({ error: "Failed to fetch featured rooms." });
-      }
-    });
-
-    // ==========================================
-    // PUT /rooms/:roomId (Update Room)
-    // ==========================================
-    app.put("/rooms/:roomId", verifyToken, async (req, res) => {
-      try {
-        const { roomId } = req.params;
-        const userEmail = req.user.email;
-
-        const existingRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
-        if (!existingRoom) return res.status(404).json({ message: "Room not found." });
-
-        if (existingRoom.createdBy !== userEmail) {
-          return res.status(403).json({ message: "Forbidden: Ownership verification failed." });
-        }
-
-        const { roomName, description, image, floor, capacity, hourlyRate, amenities } = req.body;
-
-        const updatedRoom = {
-          $set: {
-            roomName: roomName || existingRoom.roomName,
-            description: description || existingRoom.description,
-            image: image || existingRoom.image,
-            floor: floor || existingRoom.floor,
-            capacity: capacity ? parseInt(capacity) : existingRoom.capacity,
-            hourlyRate: hourlyRate ? parseFloat(hourlyRate) : existingRoom.hourlyRate,
-            amenities: Array.isArray(amenities) ? amenities : existingRoom.amenities,
-            updatedAt: new Date()
-          }
-        };
-
-        await roomsCollection.updateOne({ _id: new ObjectId(roomId) }, updatedRoom);
-        res.status(200).json({ message: "Room updated successfully" });
-      } catch (err) {
-        res.status(500).json({ error: "Update execution failed." });
-      }
-    });
-
-    // ==========================================
-    // DELETE /rooms/:roomId (Delete Room)
-    // ==========================================
-    app.delete("/rooms/:roomId", verifyToken, async (req, res) => {
-      try {
-        const { roomId } = req.params;
-        const userEmail = req.user.email;
-
-        const existingRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
-        if (!existingRoom) return res.status(404).json({ message: "Room not found." });
-
-        if (existingRoom.createdBy !== userEmail) {
-          return res.status(403).json({ message: "Forbidden: Ownership verification failed." });
-        }
-
-        await bookingCollection.deleteMany({ roomId: roomId });
-        await roomsCollection.deleteOne({ _id: new ObjectId(roomId) });
-        res.status(200).json({ message: "Room deleted successfully" });
-      } catch (err) {
-        res.status(500).json({ error: "Deletion execution failed." });
-      }
-    });
-
+    const result = await roomsCollection.find(query).toArray();
+    res.send(result);
+  } catch (err) {
+    console.error("Error executing advanced room queries:", err);
+    res.status(500).send({ error: "Failed to fetch room catalog." });
+  }
+});
     // ==========================================
     // POST /bookings (Handle Booking with Collision Avoidance)
     // ==========================================
@@ -352,6 +262,81 @@ async function run() {
         res.send({ message: "Booking cancelled successfully" });
       } catch (err) {
         res.status(500).json({ error: "Failed processing cancellation tasks." });
+      }
+    });
+
+
+    // ==========================================
+    // PUT /rooms/:roomId (Update Room - Owner Only)
+    // ==========================================
+    app.put("/rooms/:roomId", verifyToken, async (req, res) => {
+      try {
+        const { roomId } = req.params;
+        const userEmail = req.user.email; // Extracted safely from verifyToken
+
+        // Find the room to check ownership parameters
+        const existingRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
+        if (!existingRoom) {
+          return res.status(404).json({ message: "Workspace sanctuary room not found." });
+        }
+
+        // 🚨 Assignment Rule Check: Match logged-in user with listing creator
+        if (existingRoom.createdBy !== userEmail) {
+          return res.status(403).json({ message: "Forbidden: You are not authorized to modify this space." });
+        }
+
+        const { roomName, description, image, floor, capacity, hourlyRate, amenities } = req.body;
+
+        const updatedRoom = {
+          $set: {
+            roomName: roomName || existingRoom.roomName,
+            description: description || existingRoom.description,
+            image: image || existingRoom.image,
+            floor: floor || existingRoom.floor,
+            capacity: capacity ? parseInt(capacity) : existingRoom.capacity,
+            hourlyRate: hourlyRate ? parseFloat(hourlyRate) : existingRoom.hourlyRate,
+            amenities: Array.isArray(amenities) ? amenities : existingRoom.amenities,
+            updatedAt: new Date()
+          }
+        };
+
+        await roomsCollection.updateOne({ _id: new ObjectId(roomId) }, updatedRoom);
+        res.status(200).json({ message: "Room updated successfully." });
+      } catch (err) {
+        console.error("PUT /rooms/:roomId operational crash:", err);
+        res.status(500).json({ error: "Failed to update target room dataset parameters." });
+      }
+    });
+
+    // ==========================================
+    // DELETE /rooms/:roomId (Delete Room - Owner Only)
+    // ==========================================
+    app.delete("/rooms/:roomId", verifyToken, async (req, res) => {
+      try {
+        const { roomId } = req.params;
+        const userEmail = req.user.email; // Extracted safely from verifyToken
+
+        // Find the room to check ownership parameters
+        const existingRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
+        if (!existingRoom) {
+          return res.status(404).json({ message: "Workspace sanctuary room not found." });
+        }
+
+        // 🚨 Assignment Rule Check: Match logged-in user with listing creator
+        if (existingRoom.createdBy !== userEmail) {
+          return res.status(403).json({ message: "Forbidden: You are not authorized to delete this space." });
+        }
+
+        // Clean up linked artifacts: Wipe out all bookings referencing this room structure
+        await bookingCollection.deleteMany({ roomId: roomId });
+        
+        // Erase the room document
+        await roomsCollection.deleteOne({ _id: new ObjectId(roomId) });
+
+        res.status(200).json({ message: "Room deleted successfully." });
+      } catch (err) {
+        console.error("DELETE /rooms/:roomId operational crash:", err);
+        res.status(500).json({ error: "Failed to erase target room listing parameters." });
       }
     });
 
